@@ -16,9 +16,10 @@
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import tinygrad
+import tinygrad.nn as nn
+class TinygradModel:
+    pass
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...loaders import FromOriginalModelMixin, PeftAdapterMixin
@@ -80,8 +81,8 @@ class FluxSingleTransformerBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.FloatTensor,
-        temb: torch.FloatTensor,
+        hidden_states: tinygrad.Tensor,
+        temb: tinygrad.Tensor,
         image_rotary_emb=None,
     ):
         residual = hidden_states
@@ -93,11 +94,11 @@ class FluxSingleTransformerBlock(nn.Module):
             image_rotary_emb=image_rotary_emb,
         )
 
-        hidden_states = torch.cat([attn_output, mlp_hidden_states], dim=2)
+        hidden_states = tinygrad.Tensor.cat(attn_output, mlp_hidden_states, dim=2)
         gate = gate.unsqueeze(1)
         hidden_states = gate * self.proj_out(hidden_states)
         hidden_states = residual + hidden_states
-        if hidden_states.dtype == torch.float16:
+        if hidden_states.dtype == tinygrad.dtype.dtypes.float16:
             hidden_states = hidden_states.clip(-65504, 65504)
 
         return hidden_states
@@ -157,9 +158,9 @@ class FluxTransformerBlock(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.FloatTensor,
-        encoder_hidden_states: torch.FloatTensor,
-        temb: torch.FloatTensor,
+        hidden_states: tinygrad.Tensor,
+        encoder_hidden_states: tinygrad.Tensor,
+        temb: tinygrad.Tensor,
         image_rotary_emb=None,
     ):
         norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
@@ -197,7 +198,7 @@ class FluxTransformerBlock(nn.Module):
 
         context_ff_output = self.ff_context(norm_encoder_hidden_states)
         encoder_hidden_states = encoder_hidden_states + c_gate_mlp.unsqueeze(1) * context_ff_output
-        if encoder_hidden_states.dtype == torch.float16:
+        if encoder_hidden_states.dtype == tinygrad.dtype.dtypes.float16:
             encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
 
         return encoder_hidden_states, hidden_states
@@ -252,7 +253,7 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         )
 
         self.context_embedder = nn.Linear(self.config.joint_attention_dim, self.inner_dim)
-        self.x_embedder = torch.nn.Linear(self.config.in_channels, self.inner_dim)
+        self.x_embedder = nn.Linear(self.config.in_channels, self.inner_dim)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -292,7 +293,7 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         # set recursively
         processors = {}
 
-        def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors: Dict[str, AttentionProcessor]):
+        def fn_recursive_add_processors(name: str, module: TinygradModel, processors: Dict[str, AttentionProcessor]):
             if hasattr(module, "get_processor"):
                 processors[f"{name}.processor"] = module.get_processor()
 
@@ -387,31 +388,31 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor = None,
-        pooled_projections: torch.Tensor = None,
-        timestep: torch.LongTensor = None,
-        img_ids: torch.Tensor = None,
-        txt_ids: torch.Tensor = None,
-        guidance: torch.Tensor = None,
+        hidden_states: tinygrad.Tensor,
+        encoder_hidden_states: tinygrad.Tensor = None,
+        pooled_projections: tinygrad.Tensor = None,
+        timestep: tinygrad.Tensor = None,
+        img_ids: tinygrad.Tensor = None,
+        txt_ids: tinygrad.Tensor = None,
+        guidance: tinygrad.Tensor = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         controlnet_block_samples=None,
         controlnet_single_block_samples=None,
         return_dict: bool = True,
-    ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
+    ) -> Union[tinygrad.Tensor, Transformer2DModelOutput]:
         """
         The [`FluxTransformer2DModel`] forward method.
 
         Args:
-            hidden_states (`torch.FloatTensor` of shape `(batch size, channel, height, width)`):
+            hidden_states (`tinygrad.Tensor` of shape `(batch size, channel, height, width)`):
                 Input `hidden_states`.
-            encoder_hidden_states (`torch.FloatTensor` of shape `(batch size, sequence_len, embed_dims)`):
+            encoder_hidden_states (`tinygrad.Tensor` of shape `(batch size, sequence_len, embed_dims)`):
                 Conditional embeddings (embeddings computed from the input conditions such as prompts) to use.
-            pooled_projections (`torch.FloatTensor` of shape `(batch_size, projection_dim)`): Embeddings projected
+            pooled_projections (`tinygrad.Tensor` of shape `(batch_size, projection_dim)`): Embeddings projected
                 from the embeddings of input conditions.
-            timestep ( `torch.LongTensor`):
+            timestep ( `tinygrad.Tensor`):
                 Used to indicate denoising step.
-            block_controlnet_hidden_states: (`list` of `torch.Tensor`):
+            block_controlnet_hidden_states: (`list` of `tinygrad.Tensor`):
                 A list of tensors that if specified are added to the residuals of transformer blocks.
             joint_attention_kwargs (`dict`, *optional*):
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
@@ -455,41 +456,42 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
 
         if txt_ids.ndim == 3:
             logger.warning(
-                "Passing `txt_ids` 3d torch.Tensor is deprecated."
+                "Passing `txt_ids` 3d tinygrad.Tensor is deprecated."
                 "Please remove the batch dimension and pass it as a 2d torch Tensor"
             )
             txt_ids = txt_ids[0]
         if img_ids.ndim == 3:
             logger.warning(
-                "Passing `img_ids` 3d torch.Tensor is deprecated."
+                "Passing `img_ids` 3d tinygrad.Tensor is deprecated."
                 "Please remove the batch dimension and pass it as a 2d torch Tensor"
             )
             img_ids = img_ids[0]
 
-        ids = torch.cat((txt_ids, img_ids), dim=0)
+        ids = tinygrad.Tensor.cat(txt_ids, img_ids, dim=0)
         image_rotary_emb = self.pos_embed(ids)
 
         for index_block, block in enumerate(self.transformer_blocks):
             if self.training and self.gradient_checkpointing:
+                raise NotImplementedError("Gradient checkpointing is not supported for FluxTransformer2DModel on Tinygrad.")
 
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
+                # def create_custom_forward(module, return_dict=None):
+                #     def custom_forward(*inputs):
+                #         if return_dict is not None:
+                #             return module(*inputs, return_dict=return_dict)
+                #         else:
+                #             return module(*inputs)
 
-                    return custom_forward
+                #     return custom_forward
 
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    **ckpt_kwargs,
-                )
+                # ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                # encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                #     create_custom_forward(block),
+                #     hidden_states,
+                #     encoder_hidden_states,
+                #     temb,
+                #     image_rotary_emb,
+                #     **ckpt_kwargs,
+                # )
 
             else:
                 encoder_hidden_states, hidden_states = block(
@@ -505,28 +507,29 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
                 interval_control = int(np.ceil(interval_control))
                 hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+        hidden_states = tinygrad.Tensor.cat(encoder_hidden_states, hidden_states, dim=1)
 
         for index_block, block in enumerate(self.single_transformer_blocks):
             if self.training and self.gradient_checkpointing:
+                raise NotImplementedError("Gradient checkpointing is not supported for FluxTransformer2DModel on Tinygrad.")
 
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
+                # def create_custom_forward(module, return_dict=None):
+                #     def custom_forward(*inputs):
+                #         if return_dict is not None:
+                #             return module(*inputs, return_dict=return_dict)
+                #         else:
+                #             return module(*inputs)
 
-                    return custom_forward
+                #     return custom_forward
 
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    **ckpt_kwargs,
-                )
+                # ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                # hidden_states = torch.utils.checkpoint.checkpoint(
+                #     create_custom_forward(block),
+                #     hidden_states,
+                #     temb,
+                #     image_rotary_emb,
+                #     **ckpt_kwargs,
+                # )
 
             else:
                 hidden_states = block(
